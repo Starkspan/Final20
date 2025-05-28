@@ -1,74 +1,60 @@
-const express = require("express");
-const multer = require("multer");
-const fs = require("fs");
-const { fromPath } = require("pdf2pic");
-const vision = require("@google-cloud/vision");
-
+const express = require('express');
+const fileUpload = require('express-fileupload');
+const vision = require('@google-cloud/vision');
+const fs = require('fs');
+const pdf = require('pdf2pic');
 const app = express();
 const port = process.env.PORT || 10000;
-const upload = multer({ dest: "uploads/" });
 
-const client = new vision.ImageAnnotatorClient({
-  keyFilename: "/etc/secrets/google-ocr-key.json",
-});
-
-app.use(express.static("public"));
+app.use(fileUpload());
 app.use(express.json());
+app.use(express.urlencoded({ extended: true }));
 
-app.post("/analyze", upload.single("file"), async (req, res) => {
-  try {
-    const pdfPath = req.file.path;
-    const outputPath = \`out/\${Date.now()}.jpg\`;
-
-    const converter = fromPath(pdfPath, {
-      density: 300,
-      saveFilename: Path.basename(outputPath, ".jpg"),
-      savePath: "out",
-      format: "jpg",
-      width: 1654,
-      height: 2339,
-    });
-
-    const result = await converter(1);
-    const image = fs.readFileSync(result.path);
-    const base64Image = image.toString("base64");
-
-    const [ocrResult] = await client.textDetection(result.path);
-    const text = ocrResult.fullTextAnnotation?.text || "";
-
-    // Analyse simuliert
-    const merkmale = {
-      bohrungen: text.includes("ø") ? 1 : 0,
-      gewinde: text.toLowerCase().includes("m") ? 1 : 0,
-      toleranzen: text.includes("±") ? 1 : 0,
-      passungen: text.includes("H7") ? 1 : 0,
-      nuten: text.includes("nut") ? 1 : 0,
-      oberflächen: text.includes("ra") ? 1 : 0,
-    };
-
-    const bearbeitungszeit =
-      merkmale.bohrungen +
-      merkmale.gewinde +
-      merkmale.toleranzen +
-      merkmale.passungen +
-      merkmale.nuten +
-      merkmale.oberflächen;
-
-    res.json({
-      image: \`data:image/jpeg;base64,\${base64Image}\`,
-      text,
-      merkmale,
-      bearbeitungszeit,
-    });
-
-    fs.unlinkSync(result.path);
-    fs.unlinkSync(pdfPath);
-  } catch (err) {
-    console.error(err);
-    res.status(500).json({ error: "Analyse fehlgeschlagen" });
+app.post('/analyze', async (req, res) => {
+  if (!req.files || !req.files.file) {
+    return res.status(400).send('No file uploaded.');
   }
+
+  const uploadedFile = req.files.file;
+  const fileName = `${Date.now()}_${uploadedFile.name}`;
+  const pdfPath = `./${fileName}`;
+  await uploadedFile.mv(pdfPath);
+
+  const outputPath = `out/${Date.now()}.jpg`;
+
+  const converter = new pdf.default({
+    density: 300,
+    saveFilename: 'preview',
+    savePath: './out',
+    format: 'jpg',
+    width: 1654,
+    height: 2339,
+  });
+
+  const convert = await converter.convertBulk(pdfPath, [1]);
+
+  const client = new vision.ImageAnnotatorClient();
+  const [result] = await client.textDetection(outputPath);
+  const detections = result.textAnnotations;
+
+  const text = detections.length > 0 ? detections[0].description : '';
+
+  res.json({
+    text: text,
+    merkmale: {
+      bohrungen: (text.match(/ø|bohr/i) || []).length,
+      gewinde: (text.match(/gewinde/i) || []).length,
+      toleranzen: (text.match(/[±]/i) || []).length,
+      passungen: (text.match(/H7|g6|f7/i) || []).length,
+      nuten: (text.match(/nut/i) || []).length,
+      oberflächen: (text.match(/ra|rauheit/i) || []).length,
+    },
+    bearbeitungszeit: 0
+  });
+
+  fs.unlinkSync(pdfPath);
 });
 
 app.listen(port, () => {
-  console.log("OCR Backend läuft auf Port", port);
+  console.log(`OCR Backend läuft auf Port ${port}`);
 });
