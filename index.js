@@ -1,34 +1,65 @@
-const express = require("express");
-const multer = require("multer");
-const vision = require("@google-cloud/vision");
-const cors = require("cors");
-const fs = require("fs");
-const path = require("path");
+const express = require('express');
+const fileUpload = require('express-fileupload');
+const vision = require('@google-cloud/vision');
+const fs = require('fs');
+const path = require('path');
+const cors = require('cors');
 
 const app = express();
-const port = process.env.PORT || 10000;
+const PORT = process.env.PORT || 10000;
+
 app.use(cors());
 app.use(express.json());
-
-const upload = multer({ dest: "uploads/" });
+app.use(fileUpload());
 
 const client = new vision.ImageAnnotatorClient({
-  keyFilename: path.join(__dirname, "google-ocr-key.json")
+  keyFilename: '/etc/secrets/google-ocr-key.json',
 });
 
-app.post("/analyze", upload.single("file"), async (req, res) => {
+app.post('/analyze', async (req, res) => {
   try {
-    const [result] = await client.textDetection(req.file.path);
-    const detections = result.textAnnotations;
-    const fullText = detections.length ? detections[0].description : "";
-    fs.unlinkSync(req.file.path);
-    res.json({ text: fullText });
-  } catch (error) {
-    console.error("OCR error:", error.message);
-    res.status(500).json({ error: "OCR failed" });
+    if (!req.files || !req.files.file) {
+      return res.status(400).send('No file uploaded.');
+    }
+
+    const uploadedFile = req.files.file;
+    const filePath = path.join(__dirname, 'upload.pdf');
+    await uploadedFile.mv(filePath);
+
+    const [result] = await client.documentTextDetection(filePath);
+    const fullTextAnnotation = result.fullTextAnnotation;
+    const text = fullTextAnnotation ? fullTextAnnotation.text : '';
+
+    const features = {
+      bohrungen: (text.match(/ø|⌀/gi) || []).length,
+      gewinde: (text.match(/gewinde/gi) || []).length,
+      toleranzen: (text.match(/±|toleranz/gi) || []).length,
+      passungen: (text.match(/H7|H6|P6|P7|js/gi) || []).length,
+      nuten: (text.match(/nut|keil/gi) || []).length,
+      oberflächen: (text.match(/ra|rauheit|politur/gi) || []).length,
+    };
+
+    const bearbeitungszeit = features.bohrungen * 0.5 +
+                              features.gewinde * 1.5 +
+                              features.toleranzen * 1.0 +
+                              features.passungen * 0.8 +
+                              features.nuten * 0.7 +
+                              features.oberflächen * 0.6;
+
+    fs.unlinkSync(filePath);
+
+    res.json({
+      text,
+      merkmale: features,
+      bearbeitungszeit: Math.round(bearbeitungszeit)
+    });
+
+  } catch (err) {
+    console.error(err);
+    res.status(500).send('Fehler bei der Analyse.');
   }
 });
 
-app.listen(port, () => {
-  console.log(`OCR Backend läuft auf Port ${port}`);
+app.listen(PORT, () => {
+  console.log(`OCR Backend läuft auf Port ${PORT}`);
 });
