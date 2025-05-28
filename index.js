@@ -1,42 +1,47 @@
 const express = require('express');
-const fileUpload = require('express-fileupload');
+const multer = require('multer');
 const vision = require('@google-cloud/vision');
+const cors = require('cors');
 const fs = require('fs');
+const { fromPath } = require('pdf2pic');
+
 const app = express();
+const upload = multer({ dest: 'uploads/' });
 const port = process.env.PORT || 10000;
 
-app.use(fileUpload());
+app.use(cors());
 app.use(express.json());
 app.use(express.static('public'));
 
-const client = new vision.ImageAnnotatorClient({
-  keyFilename: './google-credentials.json'
-});
+const client = new vision.ImageAnnotatorClient();
 
-app.post('/analyze', async (req, res) => {
+app.post('/analyze', upload.single('file'), async (req, res) => {
   try {
-    const file = req.files.file;
-    const buffer = file.data;
+    const pdfPath = req.file.path;
+    const outputPath = `output/${Date.now()}.jpg`;
 
-    const [result] = await client.textDetection({ image: { content: buffer } });
-    const detections = result.textAnnotations;
-    const text = detections.length > 0 ? detections[0].description : '';
+    const converter = fromPath(pdfPath, {
+      density: 200,
+      saveFilename: outputPath,
+      savePath: "./output",
+      format: "jpg",
+      width: 1000,
+      height: 1414,
+    });
 
-    const merkmale = {
-      bohrungen: (text.match(/ø|Ø|\bD\d+/g) || []).length,
-      gewinde: (text.match(/M\d+/g) || []).length,
-      toleranzen: (text.match(/±|H7|h6|f7/g) || []).length,
-      passungen: (text.match(/H7|h6|g6|f8|js/g) || []).length,
-      nuten: (text.match(/Nute|Nut|Keil|Feder/g) || []).length,
-      oberflächen: (text.match(/Ra|Rz|Rmax/g) || []).length,
-    };
+    const pageToConvertAsImage = 1;
+    const result = await converter(pageToConvertAsImage);
+    const imagePath = result.path;
 
-    const bearbeitungszeit = Object.values(merkmale).reduce((a, b) => a + b, 0) * 4;
+    const [visionResult] = await client.textDetection(imagePath);
+    const detections = visionResult.textAnnotations;
+    const ocrText = detections.length > 0 ? detections[0].description : '';
 
-    res.json({ text, merkmale, bearbeitungszeit });
-  } catch (error) {
-    console.error(error);
-    res.status(500).json({ error: 'Fehler bei der Analyse' });
+    fs.unlinkSync(pdfPath); // temporäre PDF löschen
+    res.json({ text: ocrText });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Analyse fehlgeschlagen' });
   }
 });
 
